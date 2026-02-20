@@ -1,9 +1,10 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
 const express = require('express');
 const qrcode = require('qrcode-terminal');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
+const pino = require('pino');
 
 const app = express();
 app.use(bodyParser.json());
@@ -20,72 +21,49 @@ function saveLog(entry) {
     fs.writeFileSync(LOG_FILE, JSON.stringify(logs.slice(0, 200), null, 2));
 }
 
-// ── مسار Chromium ─────────────────────────────────────────────
-// Render يثبّت Chromium على /usr/bin/chromium عبر render.yaml
-const CHROMIUM_PATHS = [
-    process.env.CHROMIUM_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-];
-
-function findChromium() {
-    for (const p of CHROMIUM_PATHS) {
-        if (p && fs.existsSync(p)) {
-            console.log('✅ Chromium found:', p);
-            return p;
-        }
-    }
-    throw new Error('Chromium not found! Check render.yaml build command.');
-}
-
-// ── WhatsApp Client ──────────────────────────────────────────
-let client;
+// ── WhatsApp (Baileys — بدون Chrome) ─────────────────────────
+let sock;
 let isReady = false;
 
-function initClient() {
-    const executablePath = findChromium();
+async function initWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
-    client = new Client({
-        authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
-        puppeteer: {
-            executablePath,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ],
-            headless: true
+    sock = makeWASocket({
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+        },
+        printQRInTerminal: false,
+        logger: pino({ level: 'silent' }),
+        browser: ['Dental Clinic', 'Chrome', '1.0.0'],
+    });
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('\n\n📱 ======== امسح هذا الكود من واتساب ========\n');
+            qrcode.generate(qr, { small: true });
+            console.log('\n============================================');
+            console.log('واتساب ← الأجهزة المرتبطة ← ربط جهاز\n');
+        }
+
+        if (connection === 'open') {
+            console.log('\n✅ WhatsApp متصل وجاهز للإرسال!\n');
+            isReady = true;
+        }
+
+        if (connection === 'close') {
+            isReady = false;
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('❌ انقطع الاتصال. إعادة المحاولة:', shouldReconnect);
+            if (shouldReconnect) {
+                setTimeout(() => initWhatsApp(), 5000);
+            }
         }
     });
 
-    client.on('qr', (qr) => {
-        console.log('\n\n📱 ======== امسح هذا الكود من واتساب ========\n');
-        qrcode.generate(qr, { small: true });
-        console.log('\n============================================\n');
-        console.log('واتساب ← الأجهزة المرتبطة ← ربط جهاز\n');
-    });
-
-    client.on('ready', () => {
-        console.log('\n✅ WhatsApp متصل وجاهز للإرسال!\n');
-        isReady = true;
-    });
-
-    client.on('disconnected', (reason) => {
-        console.log('❌ انقطع الاتصال:', reason);
-        isReady = false;
-        setTimeout(() => { console.log('🔄 إعادة الاتصال...'); client.initialize(); }, 10000);
-    });
-
-    client.on('auth_failure', () => { console.log('❌ فشل المصادقة'); isReady = false; });
-
-    client.initialize();
+    sock.ev.on('creds.update', saveCreds);
 }
 
 // ── Helper ────────────────────────────────────────────────────
@@ -93,7 +71,7 @@ function formatPhone(phone, countryCode = '962') {
     let cleaned = phone.replace(/\D/g, '');
     if (cleaned.startsWith('0')) cleaned = countryCode + cleaned.substring(1);
     else if (!cleaned.startsWith(countryCode)) cleaned = countryCode + cleaned;
-    return cleaned + '@c.us';
+    return cleaned + '@s.whatsapp.net';  // Baileys يستخدم @s.whatsapp.net
 }
 
 // ── API ───────────────────────────────────────────────────────
@@ -106,21 +84,10 @@ app.post('/send-booking', async (req, res) => {
     if (!phone || !patient_name || !appointment_date || !appointment_time)
         return res.status(400).json({ success: false, error: 'بيانات ناقصة' });
 
-    const message =
-`مرحباً *${patient_name}* 👋
-
-✅ *تم تأكيد موعدك بنجاح*
-
-━━━━━━━━━━━━━━
-📅 التاريخ: *${appointment_date}*
-⏰ الوقت: *${appointment_time}*
-━━━━━━━━━━━━━━
-
-نتطلع لرؤيتك! إذا أردت تغيير الموعد يرجى التواصل معنا.
-شكراً لثقتكم 🙏`;
+    const message = `مرحباً *${patient_name}* 👋\n\n✅ *تم تأكيد موعدك بنجاح*\n\n━━━━━━━━━━━━━━\n📅 التاريخ: *${appointment_date}*\n⏰ الوقت: *${appointment_time}*\n━━━━━━━━━━━━━━\n\nنتطلع لرؤيتك! إذا أردت تغيير الموعد يرجى التواصل معنا.\nشكراً لثقتكم 🙏`;
 
     try {
-        await client.sendMessage(formatPhone(phone, country_code), message);
+        await sock.sendMessage(formatPhone(phone, country_code), { text: message });
         saveLog({ id: Date.now().toString(), type: 'booking', type_label: 'تأكيد موعد', phone, patient_name, appointment_date, appointment_time, sent_at: new Date().toISOString(), status: 'sent' });
         console.log(`📤 [BOOKING] → ${phone} (${patient_name})`);
         res.json({ success: true });
@@ -149,7 +116,7 @@ app.post('/send-payment', async (req, res) => {
     message += `━━━━━━━━━━━━━━\nشكراً لثقتكم 🙏`;
 
     try {
-        await client.sendMessage(formatPhone(phone, country_code), message);
+        await sock.sendMessage(formatPhone(phone, country_code), { text: message });
         saveLog({ id: Date.now().toString(), type: 'payment', type_label: 'تفاصيل دفع', phone, patient_name, appointment_date, appointment_time, doctor_name, procedure, total_cost, amount_paid, total_paid, remaining_balance, sent_at: new Date().toISOString(), status: 'sent' });
         console.log(`📤 [PAYMENT] → ${phone} (${patient_name})`);
         res.json({ success: true });
@@ -163,11 +130,7 @@ app.post('/send-payment', async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`\n🚀 Server على http://localhost:${PORT}`);
-    console.log('🔄 جاري تشغيل WhatsApp...\n');
-    try {
-        initClient();
-    } catch (err) {
-        console.error('❌ فشل:', err.message);
-        process.exit(1);
-    }
+    console.log('🔄 جاري تشغيل WhatsApp (بدون Chrome)...\n');
 });
+
+initWhatsApp();
