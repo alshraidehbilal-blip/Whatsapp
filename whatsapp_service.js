@@ -4,55 +4,42 @@ const qrcode = require('qrcode-terminal');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const app = express();
 app.use(bodyParser.json());
 
 // ── سجل الرسائل ──────────────────────────────────────────────
 const LOG_FILE = path.join(__dirname, 'sent_messages.json');
-
 function loadLogs() {
-    try {
-        if (fs.existsSync(LOG_FILE)) return JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
-    } catch (e) {}
+    try { if (fs.existsSync(LOG_FILE)) return JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')); } catch(e) {}
     return [];
 }
-
 function saveLog(entry) {
     const logs = loadLogs();
     logs.unshift(entry);
     fs.writeFileSync(LOG_FILE, JSON.stringify(logs.slice(0, 200), null, 2));
 }
 
-// ── إيجاد مسار Chrome المثبت فعلياً ─────────────────────────
+// ── إيجاد Chrome ─────────────────────────────────────────────
 function findChrome() {
-    // البحث في مجلد puppeteer cache بأي version
-    try {
-        const result = execSync(
-            'find /opt/render/.cache/puppeteer -name "chrome" -type f 2>/dev/null | head -1'
-        ).toString().trim();
-        if (result) {
-            console.log('✅ Chrome found:', result);
-            return result;
-        }
-    } catch (e) {}
-
-    // fallback: chromium على Linux
-    const fallbacks = [
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/google-chrome',
-    ];
-    for (const p of fallbacks) {
-        if (fs.existsSync(p)) {
-            console.log('✅ Chrome found:', p);
-            return p;
+    // ابحث في مجلد puppeteer cache عن أي نسخة chrome
+    const cacheDir = '/opt/render/.cache/puppeteer/chrome';
+    if (fs.existsSync(cacheDir)) {
+        const versions = fs.readdirSync(cacheDir);
+        for (const ver of versions) {
+            const chromePath = path.join(cacheDir, ver, 'chrome-linux64', 'chrome');
+            if (fs.existsSync(chromePath)) {
+                console.log('✅ Chrome found at:', chromePath);
+                return chromePath;
+            }
         }
     }
-
-    throw new Error('Chrome not found!');
+    // fallback
+    const fallbacks = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'];
+    for (const p of fallbacks) {
+        if (fs.existsSync(p)) { console.log('✅ Chrome fallback:', p); return p; }
+    }
+    throw new Error('Chrome not found in ' + cacheDir);
 }
 
 // ── WhatsApp Client ──────────────────────────────────────────
@@ -63,21 +50,12 @@ function initClient() {
     const executablePath = findChrome();
 
     client = new Client({
-        authStrategy: new LocalAuth({
-            dataPath: path.join(__dirname, '.wwebjs_auth')
-        }),
+        authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
         puppeteer: {
-            executablePath,   // ← المسار الصحيح المُكتشف
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ],
+            executablePath,
+            args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
+                   '--disable-accelerated-2d-canvas','--no-first-run','--no-zygote',
+                   '--single-process','--disable-gpu'],
             headless: true
         }
     });
@@ -86,32 +64,21 @@ function initClient() {
         console.log('\n\n📱 ======== امسح هذا الكود من واتساب ========\n');
         qrcode.generate(qr, { small: true });
         console.log('\n===========================================\n');
-        console.log('واتساب → النقاط الثلاث → الأجهزة المرتبطة → ربط جهاز\n');
     });
 
-    client.on('ready', () => {
-        console.log('\n✅ WhatsApp متصل وجاهز!\n');
-        isReady = true;
-    });
+    client.on('ready', () => { console.log('\n✅ WhatsApp متصل وجاهز!\n'); isReady = true; });
 
     client.on('disconnected', (reason) => {
         console.log('❌ انقطع الاتصال:', reason);
         isReady = false;
-        setTimeout(() => {
-            console.log('🔄 إعادة الاتصال...');
-            client.initialize();
-        }, 10000);
+        setTimeout(() => { console.log('🔄 إعادة الاتصال...'); client.initialize(); }, 10000);
     });
 
-    client.on('auth_failure', () => {
-        console.log('❌ فشل المصادقة');
-        isReady = false;
-    });
-
+    client.on('auth_failure', () => { console.log('❌ فشل المصادقة'); isReady = false; });
     client.initialize();
 }
 
-// ── Helper: تنسيق رقم الهاتف ─────────────────────────────────
+// ── Helper ────────────────────────────────────────────────────
 function formatPhone(phone, countryCode = '962') {
     let cleaned = phone.replace(/\D/g, '');
     if (cleaned.startsWith('0')) cleaned = countryCode + cleaned.substring(1);
@@ -119,25 +86,16 @@ function formatPhone(phone, countryCode = '962') {
     return cleaned + '@c.us';
 }
 
-// ── API Endpoints ─────────────────────────────────────────────
+// ── API ───────────────────────────────────────────────────────
+app.get('/status', (req, res) => res.json({ connected: isReady, timestamp: new Date().toISOString() }));
+app.get('/messages', (req, res) => res.json(loadLogs()));
 
-app.get('/status', (req, res) => {
-    res.json({ connected: isReady, timestamp: new Date().toISOString() });
-});
-
-app.get('/messages', (req, res) => {
-    res.json(loadLogs());
-});
-
-// رسالة تأكيد موعد
 app.post('/send-booking', async (req, res) => {
     if (!isReady) return res.status(503).json({ success: false, error: 'WhatsApp غير متصل' });
-
     const { phone, country_code = '962', patient_name, appointment_date, appointment_time } = req.body;
     if (!phone || !patient_name || !appointment_date || !appointment_time)
         return res.status(400).json({ success: false, error: 'بيانات ناقصة' });
 
-    const formattedPhone = formatPhone(phone, country_code);
     const message =
 `مرحباً *${patient_name}* 👋
 
@@ -149,11 +107,10 @@ app.post('/send-booking', async (req, res) => {
 ━━━━━━━━━━━━━━
 
 نتطلع لرؤيتك! إذا أردت تغيير الموعد يرجى التواصل معنا.
-
 شكراً لثقتكم 🙏`;
 
     try {
-        await client.sendMessage(formattedPhone, message);
+        await client.sendMessage(formatPhone(phone, country_code), message);
         saveLog({ id: Date.now().toString(), type: 'booking', type_label: 'تأكيد موعد', phone, patient_name, appointment_date, appointment_time, sent_at: new Date().toISOString(), status: 'sent' });
         console.log(`📤 [BOOKING] → ${phone} (${patient_name})`);
         res.json({ success: true });
@@ -163,14 +120,11 @@ app.post('/send-booking', async (req, res) => {
     }
 });
 
-// رسالة تفاصيل الدفع
 app.post('/send-payment', async (req, res) => {
     if (!isReady) return res.status(503).json({ success: false, error: 'WhatsApp غير متصل' });
-
     const { phone, country_code = '962', patient_name, appointment_date, appointment_time, doctor_name, procedure, total_cost, amount_paid, total_paid, remaining_balance } = req.body;
     if (!phone || !patient_name) return res.status(400).json({ success: false, error: 'بيانات ناقصة' });
 
-    const formattedPhone = formatPhone(phone, country_code);
     let message = `مرحباً *${patient_name}* 👋\n\n🧾 *تفاصيل الزيارة والدفع*\n\n━━━━━━━━━━━━━━\n`;
     if (appointment_date) message += `📅 التاريخ: *${appointment_date}*\n`;
     if (appointment_time) message += `⏰ الوقت: *${appointment_time}*\n`;
@@ -185,7 +139,7 @@ app.post('/send-payment', async (req, res) => {
     message += `━━━━━━━━━━━━━━\nشكراً لثقتكم 🙏`;
 
     try {
-        await client.sendMessage(formattedPhone, message);
+        await client.sendMessage(formatPhone(phone, country_code), message);
         saveLog({ id: Date.now().toString(), type: 'payment', type_label: 'تفاصيل دفع', phone, patient_name, appointment_date, appointment_time, doctor_name, procedure, total_cost, amount_paid, total_paid, remaining_balance, sent_at: new Date().toISOString(), status: 'sent' });
         console.log(`📤 [PAYMENT] → ${phone} (${patient_name})`);
         res.json({ success: true });
@@ -203,7 +157,7 @@ app.listen(PORT, () => {
     try {
         initClient();
     } catch (err) {
-        console.error('❌ فشل تشغيل WhatsApp Client:', err.message);
+        console.error('❌ فشل:', err.message);
         process.exit(1);
     }
 });
