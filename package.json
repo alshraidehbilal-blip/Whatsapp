@@ -1,14 +1,15 @@
 {
   "name": "whatsapp-notification-service",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "main": "whatsapp_service.js",
   "scripts": {
     "start": "node whatsapp_service.js"
   },
   "dependencies": {
-    "whatsapp-web.js": "^1.23.0",
+    "@whiskeysockets/baileys": "^6.7.9",
     "express": "^4.18.2",
     "body-parser": "^1.20.2",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^8.0.0"
   }
 }
