@@ -20,26 +20,24 @@ function saveLog(entry) {
     fs.writeFileSync(LOG_FILE, JSON.stringify(logs.slice(0, 200), null, 2));
 }
 
-// ── إيجاد Chrome ─────────────────────────────────────────────
-function findChrome() {
-    // ابحث في مجلد puppeteer cache عن أي نسخة chrome
-    const cacheDir = '/opt/render/.cache/puppeteer/chrome';
-    if (fs.existsSync(cacheDir)) {
-        const versions = fs.readdirSync(cacheDir);
-        for (const ver of versions) {
-            const chromePath = path.join(cacheDir, ver, 'chrome-linux64', 'chrome');
-            if (fs.existsSync(chromePath)) {
-                console.log('✅ Chrome found at:', chromePath);
-                return chromePath;
-            }
+// ── مسار Chromium ─────────────────────────────────────────────
+// Render يثبّت Chromium على /usr/bin/chromium عبر render.yaml
+const CHROMIUM_PATHS = [
+    process.env.CHROMIUM_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+];
+
+function findChromium() {
+    for (const p of CHROMIUM_PATHS) {
+        if (p && fs.existsSync(p)) {
+            console.log('✅ Chromium found:', p);
+            return p;
         }
     }
-    // fallback
-    const fallbacks = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'];
-    for (const p of fallbacks) {
-        if (fs.existsSync(p)) { console.log('✅ Chrome fallback:', p); return p; }
-    }
-    throw new Error('Chrome not found in ' + cacheDir);
+    throw new Error('Chromium not found! Check render.yaml build command.');
 }
 
 // ── WhatsApp Client ──────────────────────────────────────────
@@ -47,15 +45,22 @@ let client;
 let isReady = false;
 
 function initClient() {
-    const executablePath = findChrome();
+    const executablePath = findChromium();
 
     client = new Client({
         authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
         puppeteer: {
             executablePath,
-            args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
-                   '--disable-accelerated-2d-canvas','--no-first-run','--no-zygote',
-                   '--single-process','--disable-gpu'],
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ],
             headless: true
         }
     });
@@ -63,10 +68,14 @@ function initClient() {
     client.on('qr', (qr) => {
         console.log('\n\n📱 ======== امسح هذا الكود من واتساب ========\n');
         qrcode.generate(qr, { small: true });
-        console.log('\n===========================================\n');
+        console.log('\n============================================\n');
+        console.log('واتساب ← الأجهزة المرتبطة ← ربط جهاز\n');
     });
 
-    client.on('ready', () => { console.log('\n✅ WhatsApp متصل وجاهز!\n'); isReady = true; });
+    client.on('ready', () => {
+        console.log('\n✅ WhatsApp متصل وجاهز للإرسال!\n');
+        isReady = true;
+    });
 
     client.on('disconnected', (reason) => {
         console.log('❌ انقطع الاتصال:', reason);
@@ -75,6 +84,7 @@ function initClient() {
     });
 
     client.on('auth_failure', () => { console.log('❌ فشل المصادقة'); isReady = false; });
+
     client.initialize();
 }
 

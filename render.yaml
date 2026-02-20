@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: whatsapp-service
+    runtime: node
+    buildCommand: apt-get update && apt-get install -y chromium && npm install
+    startCommand: node whatsapp_service.js
+    envVars:
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: CHROMIUM_PATH
+        value: /usr/bin/chromium
