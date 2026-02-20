@@ -4,7 +4,7 @@ const qrcode = require('qrcode-terminal');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
-const puppeteer = require('puppeteer');
+const { execSync } = require('child_process');
 
 const app = express();
 app.use(bodyParser.json());
@@ -25,62 +25,49 @@ function saveLog(entry) {
     fs.writeFileSync(LOG_FILE, JSON.stringify(logs.slice(0, 200), null, 2));
 }
 
-// ── تحديد مسار Chrome تلقائياً ──────────────────────────────
-async function getChromePath() {
-    // على Render/Linux يكون هنا بعد التثبيت
-    const paths = [
-        '/opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome',
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/chromium',
-    ];
-
-    // جرب puppeteer المثبت أولاً
+// ── إيجاد مسار Chrome المثبت فعلياً ─────────────────────────
+function findChrome() {
+    // البحث في مجلد puppeteer cache بأي version
     try {
-        const p = puppeteer.executablePath();
-        if (p && fs.existsSync(p)) {
-            console.log('✅ Chrome found at:', p);
-            return p;
+        const result = execSync(
+            'find /opt/render/.cache/puppeteer -name "chrome" -type f 2>/dev/null | head -1'
+        ).toString().trim();
+        if (result) {
+            console.log('✅ Chrome found:', result);
+            return result;
         }
     } catch (e) {}
 
-    // جرب المسارات اليدوية
-    for (const pattern of paths) {
-        if (!pattern.includes('*')) {
-            if (fs.existsSync(pattern)) {
-                console.log('✅ Chrome found at:', pattern);
-                return pattern;
-            }
+    // fallback: chromium على Linux
+    const fallbacks = [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+    ];
+    for (const p of fallbacks) {
+        if (fs.existsSync(p)) {
+            console.log('✅ Chrome found:', p);
+            return p;
         }
     }
 
-    // glob search للمسار الديناميكي
-    try {
-        const { execSync } = require('child_process');
-        const found = execSync('find /opt/render/.cache/puppeteer -name "chrome" -type f 2>/dev/null | head -1')
-            .toString().trim();
-        if (found) {
-            console.log('✅ Chrome found at:', found);
-            return found;
-        }
-    } catch (e) {}
-
-    throw new Error('❌ Chrome not found! Run: npx puppeteer browsers install chrome');
+    throw new Error('Chrome not found!');
 }
 
 // ── WhatsApp Client ──────────────────────────────────────────
 let client;
 let isReady = false;
 
-async function initClient() {
-    const executablePath = await getChromePath();
+function initClient() {
+    const executablePath = findChrome();
 
     client = new Client({
         authStrategy: new LocalAuth({
             dataPath: path.join(__dirname, '.wwebjs_auth')
         }),
         puppeteer: {
-            executablePath,
+            executablePath,   // ← المسار الصحيح المُكتشف
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -110,7 +97,6 @@ async function initClient() {
     client.on('disconnected', (reason) => {
         console.log('❌ انقطع الاتصال:', reason);
         isReady = false;
-        // إعادة المحاولة بعد 10 ثوانٍ
         setTimeout(() => {
             console.log('🔄 إعادة الاتصال...');
             client.initialize();
@@ -122,7 +108,7 @@ async function initClient() {
         isReady = false;
     });
 
-    await client.initialize();
+    client.initialize();
 }
 
 // ── Helper: تنسيق رقم الهاتف ─────────────────────────────────
@@ -214,9 +200,10 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`\n🚀 Server على http://localhost:${PORT}`);
     console.log('🔄 جاري تشغيل WhatsApp...\n');
-});
-
-initClient().catch(err => {
-    console.error('❌ فشل تشغيل WhatsApp Client:', err.message);
-    process.exit(1);
+    try {
+        initClient();
+    } catch (err) {
+        console.error('❌ فشل تشغيل WhatsApp Client:', err.message);
+        process.exit(1);
+    }
 });
