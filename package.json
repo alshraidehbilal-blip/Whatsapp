@@ -1,7 +1,6 @@
 {
   "name": "whatsapp-notification-service",
   "version": "2.0.0",
-  "description": "WhatsApp microservice for appointment notifications",
   "main": "whatsapp_service.js",
   "scripts": {
     "start": "node whatsapp_service.js",
